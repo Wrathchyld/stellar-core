@@ -1,57 +1,61 @@
+// Copyright 2022 Stellar Development Foundation and contributors. Licensed
+// under the Apache License, Version 2.0. See the COPYING file at the root
+// of this distribution or at http://www.apache.org/licenses/LICENSE-2.0
+
 #![crate_type = "staticlib"]
 #![allow(non_snake_case)]
 
-use base64::DecodeError;
-use cxx::{CxxString, CxxVector};
-use std::{borrow::Cow, pin::Pin};
+// The cxx::bridge attribute says that everything in mod rust_bridge is
+// interpreted by cxx.rs.
+#[cxx::bridge]
+mod rust_bridge {
 
-// This module (mod bridge) is the signature for this crate that's exported to C++
-#[cxx::bridge(namespace = "stellar::bridge")]
-mod bridge {
+    // LogLevel declares to cxx.rs a shared type that both Rust and C+++ will
+    // understand.
+    #[namespace = "stellar"]
+    enum LogLevel {
+        #[allow(unused)]
+        LVL_FATAL = 0,
+        LVL_ERROR = 1,
+        LVL_WARNING = 2,
+        LVL_INFO = 3,
+        LVL_DEBUG = 4,
+        LVL_TRACE = 5,
+    }
+
+    // The extern "Rust" block declares rust stuff we're going to export to C++.
+    #[namespace = "stellar::rust_bridge"]
     extern "Rust" {
         fn to_base64(b: &CxxVector<u8>, mut s: Pin<&mut CxxString>);
         fn from_base64(s: &CxxString, mut b: Pin<&mut CxxVector<u8>>);
+        fn invoke_contract(
+            wasm: &CxxVector<u8>,
+            func: &CxxString,
+            args: &CxxVector<u8>,
+        ) -> Result<Vec<u8>>;
+        fn init_logging(maxLevel: LogLevel) -> Result<()>;
+    }
+
+    // And the extern "C++" block declares C++ stuff we're going to import to
+    // Rust.
+    #[namespace = "stellar"]
+    unsafe extern "C++" {
+        include!("rust/CppShims.h");
+        // This declares (and asserts) that the external C++ definition of
+        // stellar::LogLevel must match (in size and discriminant values) the
+        // shared type declared above.
+        type LogLevel;
+        fn shim_isLogLevelAtLeast(partition: &CxxString, level: LogLevel) -> bool;
+        fn shim_logAtPartitionAndLevel(partition: &CxxString, level: LogLevel, msg: &CxxString);
     }
 }
 
-// This is the rust implementation of the bridge signature.
-fn to_base64(b: &CxxVector<u8>, mut s: Pin<&mut CxxString>) {
-    s.as_mut().clear();
-    s.push_str(base64::encode(b.as_slice()).as_str());
-}
+// Then we import various implementations to this module, for export through the bridge.
+mod b64;
+use b64::{from_base64, to_base64};
 
-fn from_base64(s: &CxxString, mut b: Pin<&mut CxxVector<u8>>) {
-    assert!(b.len() == 0);
+mod contract;
+use contract::invoke_contract;
 
-    let config =
-        base64::Config::new(base64::CharacterSet::Standard, true).decode_allow_trailing_bits(true);
-
-    let mut cow = s.to_string_lossy();
-    let bb = loop {
-        if cow.is_empty() {
-            return;
-        }
-        match base64::decode_config(cow.as_ref(), config) {
-            Ok(bb) => break bb,
-            Err(e) => {
-                let mut s = cow.to_string();
-                match e {
-                    DecodeError::InvalidByte(pos, _) | DecodeError::InvalidLastSymbol(pos, _) => {
-                        s.remove(pos);
-                    }
-                    DecodeError::InvalidLength => {
-                        s.pop();
-                    }
-                };
-                if s.is_empty() {
-                    return;
-                }
-                cow = Cow::Owned(s);
-            }
-        }
-    };
-
-    for i in bb {
-        b.as_mut().push(i)
-    }
-}
+mod log;
+use crate::log::init_logging;

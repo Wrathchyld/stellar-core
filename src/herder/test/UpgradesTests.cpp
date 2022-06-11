@@ -31,6 +31,7 @@
 
 using namespace stellar;
 using namespace stellar::txtest;
+using stellar::LedgerTestUtils::toUpgradeType;
 
 struct LedgerUpgradeableData
 {
@@ -503,8 +504,6 @@ TEST_CASE("Ledger Manager applies upgrades properly", "[upgrades]")
     auto app = createTestApplication(clock, cfg);
 
     auto const& lcl = app->getLedgerManager().getLastClosedLedgerHeader();
-    auto const& lastHash = lcl.hash;
-    auto txSet = std::make_shared<TxSetFrame>(lastHash);
 
     REQUIRE(lcl.header.ledgerVersion == LedgerManager::GENESIS_LEDGER_VERSION);
     REQUIRE(lcl.header.baseFee == LedgerManager::GENESIS_LEDGER_BASE_FEE);
@@ -567,7 +566,7 @@ TEST_CASE("upgrade to version 10", "[upgrades]")
     auto txFee = lm.getLastTxFee();
 
     auto const& lcl = lm.getLastClosedLedgerHeader();
-    auto txSet = std::make_shared<TxSetFrame>(lcl.hash);
+    auto txSet = std::make_shared<TxSetFrame const>(lcl.hash);
 
     auto root = TestAccount::createRoot(*app);
     auto issuer = root.create("issuer", lm.getLastMinBalance(0) + 100 * txFee);
@@ -1411,15 +1410,14 @@ TEST_CASE("upgrade to version 11", "[upgrades]")
     {
         auto stranger =
             TestAccount{*app, txtest::getAccount(fmt::format("stranger{}", i))};
-        TxSetFramePtr txSet =
-            std::make_shared<TxSetFrame>(lm.getLastClosedLedgerHeader().hash);
         uint32_t ledgerSeq = lm.getLastClosedLedgerNum() + 1;
         uint64_t minBalance = lm.getLastMinBalance(5);
         uint64_t big = minBalance + ledgerSeq;
         uint64_t closeTime = 60 * 5 * ledgerSeq;
-        txSet->add(root.tx({txtest::createAccount(stranger, big)}));
-        // Provoke sortForHash and hash-caching:
-        txSet->getContentsHash();
+        TxSetFrameConstPtr txSet = std::make_shared<TxSetFrame const>(
+            lm.getLastClosedLedgerHeader().hash,
+            TxSetFrame::Transactions{
+                root.tx({txtest::createAccount(stranger, big)})});
 
         // On 4th iteration of advance (a.k.a. ledgerSeq 5), perform a
         // ledger-protocol version upgrade to the new protocol, to activate
@@ -1535,15 +1533,14 @@ TEST_CASE("upgrade to version 12", "[upgrades]")
     {
         auto stranger =
             TestAccount{*app, txtest::getAccount(fmt::format("stranger{}", i))};
-        TxSetFramePtr txSet =
-            std::make_shared<TxSetFrame>(lm.getLastClosedLedgerHeader().hash);
         uint32_t ledgerSeq = lm.getLastClosedLedgerNum() + 1;
         uint64_t minBalance = lm.getLastMinBalance(5);
         uint64_t big = minBalance + ledgerSeq;
         uint64_t closeTime = 60 * 5 * ledgerSeq;
-        txSet->add(root.tx({txtest::createAccount(stranger, big)}));
-        // Provoke sortForHash and hash-caching:
-        txSet->getContentsHash();
+        TxSetFrameConstPtr txSet = std::make_shared<TxSetFrame const>(
+            lm.getLastClosedLedgerHeader().hash,
+            TxSetFrame::Transactions{
+                root.tx({txtest::createAccount(stranger, big)})});
 
         // On 4th iteration of advance (a.k.a. ledgerSeq 5), perform a
         // ledger-protocol version upgrade to the new protocol, to
@@ -1638,13 +1635,13 @@ TEST_CASE("upgrade to version 13", "[upgrades]")
     auto root = TestAccount::createRoot(*app);
     auto acc = root.create("A", lm.getLastMinBalance(2));
 
-    herder.recvTransaction(root.tx({payment(root, 1)}));
-    herder.recvTransaction(root.tx({payment(root, 2)}));
-    herder.recvTransaction(acc.tx({payment(acc, 1)}));
-    herder.recvTransaction(acc.tx({payment(acc, 2)}));
+    herder.recvTransaction(root.tx({payment(root, 1)}), false);
+    herder.recvTransaction(root.tx({payment(root, 2)}), false);
+    herder.recvTransaction(acc.tx({payment(acc, 1)}), false);
+    herder.recvTransaction(acc.tx({payment(acc, 2)}), false);
 
     auto txSet = herder.getTransactionQueue().toTxSet({});
-    for (auto const& tx : txSet->mTransactions)
+    for (auto const& tx : txSet->getTxsInHashOrder())
     {
         REQUIRE(tx->getEnvelope().type() == ENVELOPE_TYPE_TX_V0);
     }
@@ -1653,7 +1650,7 @@ TEST_CASE("upgrade to version 13", "[upgrades]")
         auto const& lcl = lm.getLastClosedLedgerHeader();
         auto ledgerSeq = lcl.header.ledgerSeq + 1;
 
-        auto emptyTxSet = std::make_shared<TxSetFrame>(lcl.hash);
+        auto emptyTxSet = std::make_shared<TxSetFrame const>(lcl.hash);
         herder.getPendingEnvelopes().putTxSet(emptyTxSet->getContentsHash(),
                                               ledgerSeq, emptyTxSet);
 
@@ -1667,7 +1664,7 @@ TEST_CASE("upgrade to version 13", "[upgrades]")
     }
 
     txSet = herder.getTransactionQueue().toTxSet({});
-    for (auto const& tx : txSet->mTransactions)
+    for (auto const& tx : txSet->getTxsInHashOrder())
     {
         REQUIRE(tx->getEnvelope().type() == ENVELOPE_TYPE_TX);
     }
@@ -1682,9 +1679,6 @@ TEST_CASE_VERSIONS("upgrade base reserve", "[upgrades]")
 
     auto& lm = app->getLedgerManager();
     auto txFee = lm.getLastTxFee();
-
-    auto const& lcl = lm.getLastClosedLedgerHeader();
-    auto txSet = std::make_shared<TxSetFrame>(lcl.hash);
 
     auto root = TestAccount::createRoot(*app);
     auto issuer = root.create("issuer", lm.getLastMinBalance(0) + 100 * txFee);
